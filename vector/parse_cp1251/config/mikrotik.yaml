@@ -1,0 +1,59 @@
+data_dir: /var/lib/vector/
+sources:
+  mikrotik_logs:
+    type: file
+    include:
+      - /var/log/mylog.log
+    host_key: ""
+    file_key: ""
+
+enrichment_tables:
+  codemap:
+    type: file
+    file:
+        path: "./enrichments/cp1251-utf8.csv"
+        encoding:
+          type: "csv"
+          delimiter: ","
+        schema:
+          cp1251: "string"
+          utf8: "string"
+
+
+transforms:
+  valid_lines:
+    type: filter
+    inputs:
+      - mikrotik_logs
+    condition:
+      type: vrl
+      source: |
+        match(string!(.message), r'^[^#].+$')
+
+  lines_remap:
+    type: remap
+    drop_on_error: true
+    inputs:
+      - valid_lines
+    source: |
+             . = parse_regex!(.message, r'^.+?(comment=(?P<comment>.+?))?\s+(?P<message>address=.+status=\S+).+$')
+             .message = parse_key_value!(.message)
+             .message.comment = .comment||"-"
+             res = replace_with(string(.message.comment), r'\\([^\\]{2})') -> |match| {
+                      string!(get_enrichment_table_record!("codemap", {"cp1251" : match.captures[0]})."utf8")
+                 }
+             .message.comment = parse_json!("{\"comment\":\"" + res +"\"}").comment
+             . = .message
+
+
+
+sinks:
+  mylog_out:   
+    type: file    
+    inputs:
+      - lines_remap
+    path: /var/log/vector/out/mylog-%Y-%m-%d.log
+    encoding: 
+      codec: "json"
+      only_fields:
+        ["address", "mac-address", "server", "status", "comment"]
